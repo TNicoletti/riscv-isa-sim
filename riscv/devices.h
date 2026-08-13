@@ -50,6 +50,7 @@ class abstract_mem_t : public abstract_device_t {
 
   virtual char* contents(reg_t addr) = 0;
   virtual void dump(std::ostream& o) = 0;
+  virtual void dump_range(std::ostream& o, reg_t start, reg_t end) = 0;
 };
 
 class mem_t : public abstract_mem_t {
@@ -63,6 +64,7 @@ class mem_t : public abstract_mem_t {
   char* contents(reg_t addr) override;
   reg_t size() override { return sz; }
   void dump(std::ostream& o) override;
+  void dump_range(std::ostream &o, reg_t start, reg_t end);
 
  private:
   bool load_store(reg_t addr, size_t len, uint8_t* bytes, bool store);

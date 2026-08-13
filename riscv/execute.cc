@@ -156,6 +156,10 @@ inline void processor_t::update_histogram(reg_t pc)
     pc_histogram[pc]++;
 }
 
+extern uint32_t ill_instruction;
+extern uint32_t faulty_instruction;
+
+
 // These two functions are expected to be inlined by the compiler separately in
 // the processor_t::step() loop. The logged variant is used in the slow path
 static inline reg_t execute_insn_fast(processor_t* p, reg_t pc, insn_fetch_t fetch) {
@@ -237,7 +241,7 @@ void processor_t::step(size_t n)
     reg_t pc = state.pc;
     state.prv_changed = false;
     state.v_changed = false;
-
+    
     #define advance_pc() \
       if (unlikely(invalid_pc(pc))) { \
         switch (pc) { \
@@ -291,6 +295,17 @@ void processor_t::step(size_t n)
 
           in_wfi = false;
           insn_fetch_t fetch = mmu->load_insn(pc);
+          insn_t insn = fetch.insn;
+          //uint32_t fault_insn_mask = 0xFC00707F;
+          uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+
+          if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) 
+            throw trap_illegal_instruction(insn.bits());
+
+          if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
+            //insn.opcode(insn.opcode() + 1);
+          }
+
           if (debug && !state.serialized)
             disasm(fetch.insn);
           pc = execute_insn_logged(this, pc, fetch);
@@ -310,6 +325,31 @@ void processor_t::step(size_t n)
       }
       else while (instret < n)
       {
+          insn_fetch_t fetch = mmu->load_insn(pc);
+          insn_t insn = fetch.insn;
+          //uint32_t fault_insn_mask = 0xFC00707F;
+          uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+
+          if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) {
+            throw trap_illegal_instruction(insn.bits());
+          }
+          
+          if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
+            // 1. Construct modified instruction
+            uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+            insn_t new_insn(modified_bits);
+
+            // 2. Build the modified fetch struct
+            fetch = insn_fetch_t{
+              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+              new_insn
+            };
+
+            // 3. OVERWRITE the I-Cache entry for this PC so the loop uses your modified fetch!
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
+          }
+
         // Main simulation loop, fast path.
         for (auto ic_entry = _mmu->access_icache(pc); ; ) {
           auto fetch = ic_entry->data;

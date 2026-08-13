@@ -315,8 +315,11 @@ static std::vector<size_t> parse_hartids(const char *s)
   return hartids;
 }
 
+int  ill_instruction = 0;
+int  faulty_instruction = 0;
 int main(int argc, char** argv)
 {
+  bool dump_memory = false;
   bool debug = false;
   bool halted = false;
   bool histogram = false;
@@ -370,6 +373,13 @@ int main(int argc, char** argv)
   option_parser_t parser;
   parser.help(&suggest_help);
   parser.option('h', "help", 0, [&](const char UNUSED *s){help(0);});
+  parser.option(0, "dump", 0, [&](const char UNUSED *s){dump_memory = true;});
+  parser.option(0, "illegal-instruction", 1, [&](const char* s){
+    ill_instruction = strtoull(s, 0, 16);
+  });
+  parser.option(0, "faulty-instruction", 1, [&](const char* s){
+    faulty_instruction = strtoull(s, 0, 16);
+  });
   parser.option('d', 0, 0, [&](const char UNUSED *s){debug = true;});
   parser.option('g', 0, 0, [&](const char UNUSED *s){histogram = true;});
   parser.option('l', 0, 0, [&](const char UNUSED *s){log = true;});
@@ -552,6 +562,27 @@ int main(int argc, char** argv)
   s.set_histogram(histogram);
 
   auto return_code = s.run();
+
+  if(ill_instruction != 0)
+  {
+    printf("<SPIKE> illegal instruction: %d\n", ill_instruction);
+  }
+
+  if(faulty_instruction != 0)
+  {
+    printf("<SPIKE> faulty instruction: %d\n", faulty_instruction);
+  }
+
+  if(dump_memory){
+    for (unsigned i = 0; i < mems.size(); i++) {
+      std::stringstream mem_fname;
+      mem_fname << "mem.0x" << std::hex << mems[i].first << ".bin";
+  
+      std::ofstream mem_file(mem_fname.str());
+      mems[i].second->dump_range(mem_file, 0x02000000, 0x03000000);
+      mem_file.close();
+    }
+  }
 
   for (auto& mem : mems)
     delete mem.second;

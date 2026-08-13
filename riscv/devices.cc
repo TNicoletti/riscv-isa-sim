@@ -156,6 +156,21 @@ void mem_t::dump(std::ostream& o) {
   }
 }
 
+void mem_t::dump_range(std::ostream& o, reg_t start, reg_t end) {
+  const char empty[PGSIZE] = {0};
+
+  for (reg_t addr = start - start % PGSIZE; addr < end; addr += PGSIZE) {
+    reg_t ppn = addr >> PGSHIFT;
+    
+    auto search = sparse_memory_map.find(ppn);
+    if (search == sparse_memory_map.end()) {
+      o.write(empty, PGSIZE);
+    } else {
+      o.write(reinterpret_cast<const char*>(search->second), PGSIZE);
+    }
+  }
+}
+
 external_sim_device_t::external_sim_device_t(abstract_sim_if_t* sim) 
   : external_simulator(sim) {}
 
