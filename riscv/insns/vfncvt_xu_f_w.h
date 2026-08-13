@@ -1,4 +1,6 @@
 // vfncvt.xu.f.w vd, vs2, vm
+if (p->extension_enabled(EXT_ZVFBFA) && P.VU.vsew >= 16 && P.VU.altfmt)
+  require(false);
 
 VI_VFP_NCVT_FP_TO_INT(
   { vd = P.VU.altfmt ? bf16_to_ui8(vs2, softfloat_roundingMode, true)
@@ -6,7 +8,7 @@ VI_VFP_NCVT_FP_TO_INT(
   { vd = f32_to_ui16(vs2, softfloat_roundingMode, true); }, // BODY32
   { vd = f64_to_ui32(vs2, softfloat_roundingMode, true); }, // BODY64
   { require_zvfbfa_or_zvfh; },                              // CHECK16
-  { require(p->extension_enabled('F')); },                  // CHECK32
-  { require(p->extension_enabled('D')); },                  // CHECK64
+  { require(p->get_isa().get_zvf()); },                     // CHECK32
+  { require(p->get_isa().get_zvd()); },                     // CHECK64
   uint                                                      // sign
 )

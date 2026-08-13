@@ -84,52 +84,15 @@ bool basic_csr_t::unlogged_write(const reg_t val) noexcept {
   return true;
 }
 
-// implement class pmpaddr_csr_t
-pmpaddr_csr_t::pmpaddr_csr_t(processor_t* const proc, const reg_t addr):
+// implement class base_pmpaddr_csr_t
+base_pmpaddr_csr_t::base_pmpaddr_csr_t(processor_t* const proc, const reg_t addr, const size_t idx):
   csr_t(proc, addr),
   val(0),
   cfg(0),
-  pmpidx(address - CSR_PMPADDR0) {
+  pmpidx(idx) {
 }
 
-void pmpaddr_csr_t::verify_permissions(insn_t insn, bool write) const {
-  csr_t::verify_permissions(insn, write);
-  // If n_pmp is zero, that means pmp is not implemented hence raise
-  // trap if it tries to access the csr. I would prefer to implement
-  // this by not instantiating any pmpaddr_csr_t for these regs, but
-  // n_pmp can change after reset() is run.
-  if (proc->n_pmp == 0)
-    throw trap_illegal_instruction(insn.bits());
-}
-
-reg_t pmpaddr_csr_t::read() const noexcept {
-  if ((cfg & PMP_A) >= PMP_NAPOT)
-    return val | (~proc->pmp_tor_mask() >> 1);
-  return val & proc->pmp_tor_mask();
-}
-
-bool pmpaddr_csr_t::unlogged_write(const reg_t val) noexcept {
-  // If no PMPs are configured, disallow access to all. Otherwise,
-  // allow access to all, but unimplemented ones are hardwired to
-  // zero. Note that n_pmp can change after reset(); otherwise I would
-  // implement this in state_t::reset() by instantiating the correct
-  // number of pmpaddr_csr_t.
-  if (proc->n_pmp == 0)
-    return false;
-
-  const bool lock_bypass = state->mseccfg->get_rlb();
-  const bool locked = !lock_bypass && (cfg & PMP_L);
-
-  if (pmpidx < proc->n_pmp && !locked && !next_locked_and_tor()) {
-    this->val = val & ((reg_t(1) << (proc->paddr_bits() - PMP_SHIFT)) - 1);
-  }
-  else
-    return false;
-  proc->get_mmu()->flush_tlb();
-  return true;
-}
-
-bool pmpaddr_csr_t::next_locked_and_tor() const noexcept {
+bool base_pmpaddr_csr_t::next_locked_and_tor() const noexcept {
   if (pmpidx+1 >= state->max_pmp) return false;  // this is the last entry
   const bool lock_bypass = state->mseccfg->get_rlb();
   const bool next_locked = !lock_bypass && (state->pmpaddr[pmpidx+1]->cfg & PMP_L);
@@ -137,22 +100,27 @@ bool pmpaddr_csr_t::next_locked_and_tor() const noexcept {
   return next_locked && next_tor;
 }
 
-reg_t pmpaddr_csr_t::tor_paddr() const noexcept {
+reg_t base_pmpaddr_csr_t::tor_paddr() const noexcept {
   return (val & proc->pmp_tor_mask()) << PMP_SHIFT;
 }
 
-reg_t pmpaddr_csr_t::tor_base_paddr() const noexcept {
+reg_t base_pmpaddr_csr_t::tor_base_paddr() const noexcept {
   if (pmpidx == 0) return 0;  // entry 0 always uses 0 as base
   return state->pmpaddr[pmpidx-1]->tor_paddr();
 }
 
-reg_t pmpaddr_csr_t::napot_mask() const noexcept {
+reg_t base_pmpaddr_csr_t::napot_mask() const noexcept {
   bool is_na4 = (cfg & PMP_A) == PMP_NA4;
   reg_t mask = (val << 1) | (!is_na4) | ~proc->pmp_tor_mask();
   return ~(mask & ~(mask + 1)) << PMP_SHIFT;
 }
 
-bool pmpaddr_csr_t::match4(reg_t addr) const noexcept {
+bool base_pmpaddr_csr_t::match4(reg_t addr) const noexcept {
+  if (proc->extension_enabled_const(EXT_SSPMPEN) && (pmpidx >= proc->n_pmp)) {
+    if (!((state->spmpen->read() >> (pmpidx - proc->n_pmp)) & 1))
+      return false;
+  }
+
   if ((cfg & PMP_A) == 0) return false;
   bool is_tor = (cfg & PMP_A) == PMP_TOR;
   if (is_tor) return tor_base_paddr() <= addr && addr < tor_paddr();
@@ -160,7 +128,12 @@ bool pmpaddr_csr_t::match4(reg_t addr) const noexcept {
   return ((addr ^ tor_paddr()) & napot_mask()) == 0;
 }
 
-bool pmpaddr_csr_t::subset_match(reg_t addr, reg_t len) const noexcept {
+bool base_pmpaddr_csr_t::subset_match(reg_t addr, reg_t len) const noexcept {
+  if (proc->extension_enabled_const(EXT_SSPMPEN) && (pmpidx >= proc->n_pmp)) {
+    if (!((state->spmpen->read() >> (pmpidx - proc->n_pmp)) & 1))
+      return false;
+  }
+
   if ((addr | len) & (len - 1))
     abort();
   reg_t base = tor_base_paddr();
@@ -180,6 +153,52 @@ bool pmpaddr_csr_t::subset_match(reg_t addr, reg_t len) const noexcept {
   bool napot_homogeneous = mask_homogeneous || ((addr ^ tor) / len) != 0;
 
   return !(is_tor ? tor_homogeneous : napot_homogeneous);
+}
+
+pmpaddr_csr_t::pmpaddr_csr_t(processor_t* const proc, const reg_t addr, const size_t idx):
+  base_pmpaddr_csr_t(proc, addr, idx) {
+}
+
+void pmpaddr_csr_t::verify_permissions(insn_t insn, bool write) const {
+  csr_t::verify_permissions(insn, write);
+  // If n_pmp is zero, that means pmp is not implemented hence raise
+  // trap if it tries to access the csr. I would prefer to implement
+  // this by not instantiating any base_pmpaddr_csr_t for these regs, but
+  // n_pmp can change after reset() is run.
+  if (proc->n_pmp == 0)
+    throw trap_illegal_instruction(insn.bits());
+}
+
+reg_t pmpaddr_csr_t::read() const noexcept {
+  if (pmpidx >= proc->n_pmp)
+    return 0;
+
+  if ((cfg & PMP_A) >= PMP_NAPOT)
+    return val | (~proc->pmp_tor_mask() >> 1);
+  return val & proc->pmp_tor_mask();
+}
+
+bool pmpaddr_csr_t::unlogged_write(const reg_t val) noexcept {
+  // If no PMPs are configured, disallow access to all. Otherwise,
+  // allow access to all, but unimplemented ones are hardwired to
+  // zero. Note that n_pmp can change after reset(); otherwise I would
+  // implement this in state_t::reset() by instantiating the correct
+  // number of base_pmpaddr_csr_t.
+  if (proc->n_pmp == 0)
+    return false;
+
+  if (pmpidx >= proc->n_pmp)
+    return true;
+
+  const bool lock_bypass = state->mseccfg->get_rlb();
+  const bool locked = !lock_bypass && (cfg & PMP_L);
+
+  if (pmpidx >= proc->n_pmp || locked || next_locked_and_tor())
+    return false;
+
+  this->val = val & ((reg_t(1) << (proc->paddr_bits() - PMP_SHIFT)) - 1);
+  proc->get_mmu()->flush_tlb();
+  return true;
 }
 
 bool pmpaddr_csr_t::access_ok(access_type type, reg_t mode, bool hlvx) const noexcept {
@@ -249,7 +268,10 @@ bool pmpcfg_csr_t::unlogged_write(const reg_t val) noexcept {
     if (i < proc->n_pmp) {
       const bool locked = (state->pmpaddr[i]->cfg & PMP_L);
       if (rlb || !locked) {
-        uint8_t cfg = (val >> (8 * (i - i0))) & (PMP_R | PMP_W | PMP_X | PMP_A | PMP_L);
+        uint8_t all_cfg_fields = (PMP_R | PMP_W | PMP_X | PMP_A |
+            (proc->extension_enabled(EXT_SMPMPMT) ? PMP_MT : 0) |
+            PMP_L);
+        uint8_t cfg = (val >> (8 * (i - i0))) & all_cfg_fields;
         // Drop R=0 W=1 when MML = 0
         // Remove the restriction when MML = 1
         if (!mml) {
@@ -258,6 +280,9 @@ bool pmpcfg_csr_t::unlogged_write(const reg_t val) noexcept {
         // Disallow A=NA4 when granularity > 4
         if (proc->lg_pmp_granularity != PMP_SHIFT && (cfg & PMP_A) == PMP_NA4)
           cfg |= PMP_NAPOT;
+        // MT value 0x3 is reserved
+        if (get_field(cfg, PMP_MT) == 0x3)
+          cfg = set_field(cfg, PMP_MT, 0);
         /*
          * Adding a rule with executable privileges that either is M-mode-only or a locked Shared-Region
          * is not possible and such pmpcfg writes are ignored, leaving pmpcfg unchanged.
@@ -278,6 +303,132 @@ bool pmpcfg_csr_t::unlogged_write(const reg_t val) noexcept {
   }
   proc->get_mmu()->flush_tlb();
   return write_success;
+}
+
+mpmpdeleg_csr_t::mpmpdeleg_csr_t(processor_t* const proc, const reg_t addr, const reg_t mask, const reg_t init):
+  masked_csr_t(proc, addr, mask, init) {
+}
+
+bool mpmpdeleg_csr_t::unlogged_write(const reg_t val) noexcept {
+  int max_locked_pmp_index = -1;
+  for(reg_t i = 0; i < proc->n_pmp; ++i) {
+    if (state->pmpaddr[i]->is_locked())
+      max_locked_pmp_index = i;
+  }
+
+  reg_t new_val = val & MPMPDELEG_PMPNUM;
+  if (new_val > state->max_pmp)
+    new_val = state->max_pmp;
+
+  bool write_success = false;
+  if (max_locked_pmp_index < (int)new_val) {
+    for (size_t i = 0; i < proc->n_pmp; ++i)
+      state->csrmap.erase(CSR_PMPADDR0 + i);
+
+    proc->n_pmp = new_val;
+    for (size_t i = 0; i < proc->n_pmp; ++i) {
+      state->add_csr(CSR_PMPADDR0 + i, state->pmpaddr[i] = std::make_shared<pmpaddr_csr_t>(proc, CSR_PMPADDR0 + i, i));
+    }
+    proc->set_spmp_addr_entry();
+    write_success = masked_csr_t::unlogged_write(new_val);
+  }
+
+  return write_success;
+}
+
+spmpaddr_csr_t::spmpaddr_csr_t(processor_t* const proc, const reg_t addr):
+  base_pmpaddr_csr_t(proc, addr, addr) {
+}
+
+reg_t spmpaddr_csr_t::read() const noexcept {
+  if ((cfg & PMP_A) >= PMP_NAPOT)
+    return val | (~proc->pmp_tor_mask() >> 1);
+  return val & proc->pmp_tor_mask();
+}
+
+bool spmpaddr_csr_t::unlogged_write(const reg_t val) noexcept {
+  if ((state->prv != PRV_M && (cfg & PMP_L)) || next_locked_and_tor())
+    return false;
+
+  this->val = val & ((reg_t(1) << (proc->paddr_bits() - PMP_SHIFT)) - 1);
+  proc->get_mmu()->flush_tlb();
+  return true;
+}
+
+bool spmpaddr_csr_t::access_ok(access_type type, reg_t mode, bool) const noexcept {
+  const bool cfgx = cfg & PMP_X;
+  const bool cfgw = cfg & PMP_W;
+  const bool cfgr = cfg & PMP_R;
+  const bool cfgu = cfg & SPMP_U;
+  const bool cfgs = cfg & SPMP_SHARED;
+
+  const bool prvs = mode == PRV_S;
+  const bool prvu = mode == PRV_U;
+
+  const bool typer = type == LOAD;
+  const bool typex = type == FETCH;
+  const bool typew = type == STORE;
+
+  const bool sum = STATE.sstatus->read() & SSTATUS_SUM;
+
+  const bool reserved = !cfgr && cfgw;
+  const bool deny = !cfgs && ((cfgu && prvs && !sum) || (!cfgu && prvu));
+
+  bool enforce_no_x(false), share_read_only(false), share_exec_only(false);
+  if (cfgu) {
+    if (!cfgs) {
+      if (prvs && sum) enforce_no_x = true;
+    } else if (cfgr && cfgw) {
+      if (cfgx) share_exec_only = true;
+      else share_read_only = true;
+    }
+  }
+
+  const bool normal_rwx = (typer && cfgr && !share_exec_only) ||
+                          (typew && cfgw && !share_read_only && !share_exec_only) ||
+                          (typex && cfgx && !share_read_only && !enforce_no_x);
+
+  return !reserved && !deny && normal_rwx;
+}
+
+spmpcfg_csr_t::spmpcfg_csr_t(processor_t* const proc, const reg_t addr, const reg_t mask, const reg_t init):
+  masked_csr_t(proc, addr, mask, init) {
+}
+
+reg_t spmpcfg_csr_t::read() const noexcept {
+  const size_t idx = proc->n_pmp + address;
+  if (idx >= state->max_pmp) return 0;
+  else return masked_csr_t::read();
+}
+
+bool spmpcfg_csr_t::unlogged_write(const reg_t val) noexcept {
+  const size_t idx = proc->n_pmp + address;
+  if (idx >= state->max_pmp) return false;
+
+  const bool locked = (state->pmpaddr[idx]->cfg & PMP_L);
+
+  bool write_success = false;
+  if (!locked) {
+    state->pmpaddr[idx]->cfg = val;
+    write_success = masked_csr_t::unlogged_write(val);
+  }
+  proc->get_mmu()->flush_tlb();
+
+  return write_success;
+}
+
+spmpen_csr_t::spmpen_csr_t(processor_t* const proc, const reg_t addr, const reg_t init):
+  basic_csr_t(proc, addr, init) {
+}
+
+bool spmpen_csr_t::unlogged_write(const reg_t val) noexcept {
+  reg_t write_val = 0;
+  for (reg_t i = proc->n_pmp-1; i < state->max_pmp; ++i) {
+    if (!state->pmpaddr[i]->is_locked() && ((val >> i) & 1))
+      write_val |= reg_t(1) << i;
+  }
+
+  return basic_csr_t::unlogged_write(write_val);
 }
 
 // implement class mseccfg_csr_t
@@ -320,7 +471,7 @@ bool mseccfg_csr_t::unlogged_write(const reg_t val) noexcept {
   if (proc->n_pmp != 0) {
     // pmpcfg.L is 1 in any rule or entry (including disabled entries)
     const bool pmplock_recorded = std::any_of(state->pmpaddr, state->pmpaddr + proc->n_pmp,
-        [](const pmpaddr_csr_t_p & c) { return c->is_locked(); } );
+        [](const base_pmpaddr_csr_t_p & c) { return c->is_locked(); } );
 
     // When RLB is 0 and pmplock_recorded, RLB is locked to 0.
     // Otherwise set the RLB bit according val
@@ -425,7 +576,7 @@ reg_t cause_csr_t::read() const noexcept {
 // implement class base_status_csr_t
 base_status_csr_t::base_status_csr_t(processor_t* const proc, const reg_t addr):
   csr_t(proc, addr),
-  has_page(proc->extension_enabled_const('S') && proc->supports_impl(IMPL_MMU)),
+  has_page(proc->extension_enabled_const('S') && proc->has_mmu()),
   sstatus_write_mask(compute_sstatus_write_mask()),
   sstatus_read_mask(sstatus_write_mask | SSTATUS_UBE | SSTATUS_UXL
                     | (proc->get_const_xlen() == 32 ? SSTATUS32_SD : SSTATUS64_SD)) {
@@ -439,22 +590,21 @@ reg_t base_status_csr_t::compute_sstatus_write_mask() const noexcept {
   const bool has_vs = proc->any_vector_extensions();
   return 0
     | (proc->extension_enabled('S') ? (SSTATUS_SIE | SSTATUS_SPIE | SSTATUS_SPP) : 0)
-    | (has_page ? (SSTATUS_SUM | SSTATUS_MXR) : 0)
+    | (has_page || proc->extension_enabled_const(EXT_SSPMP)? (SSTATUS_SUM | SSTATUS_MXR) : 0)
     | (has_fs ? SSTATUS_FS : 0)
     | (proc->any_custom_extensions() ? SSTATUS_XS : 0)
     | (has_vs ? SSTATUS_VS : 0)
-    | (proc->extension_enabled(EXT_ZICFILP) ? SSTATUS_SPELP : 0)
+    | (proc->extension_enabled('S') && proc->extension_enabled(EXT_ZICFILP) ? SSTATUS_SPELP : 0)
     | (proc->extension_enabled(EXT_SSDBLTRP) ? SSTATUS_SDT : 0)
     ;
 }
 
 reg_t base_status_csr_t::adjust_sd(const reg_t val) const noexcept {
-  // This uses get_const_xlen() instead of get_xlen() not only because
-  // the variable is static, so it's only called once, but also
+  // This uses get_const_xlen() instead of get_xlen()
   // because the SD bit moves when XLEN changes, which means we would
   // need to call adjust_sd() on every read, instead of on every
   // write.
-  static const reg_t sd_bit = proc->get_const_xlen() == 64 ? SSTATUS64_SD : SSTATUS32_SD;
+  const reg_t sd_bit = proc->get_const_xlen() == 64 ? SSTATUS64_SD : SSTATUS32_SD;
   if (((val & SSTATUS_FS) == SSTATUS_FS) ||
       ((val & SSTATUS_VS) == SSTATUS_VS) ||
       ((val & SSTATUS_XS) == SSTATUS_XS)) {
@@ -538,26 +688,31 @@ mstatus_csr_t::mstatus_csr_t(processor_t* const proc, const reg_t addr):
   val(compute_mstatus_initial_value()) {
 }
 
+reg_t mstatus_csr_t::read() const noexcept {
+  return val & ~reg_t(state->menvcfg->read() & MENVCFG_DTE ? 0 : MSTATUS_SDT);
+}
+
 bool mstatus_csr_t::unlogged_write(const reg_t val) noexcept {
   const bool has_mpv = proc->extension_enabled('H');
   const bool has_gva = has_mpv;
+  const reg_t adj_write_mask = sstatus_write_mask & ~reg_t(state->menvcfg->read() & MENVCFG_DTE ? 0 : SSTATUS_SDT);
 
-  const reg_t mask = sstatus_write_mask
+  const reg_t mask = adj_write_mask
                    | MSTATUS_MIE | MSTATUS_MPIE
                    | (proc->extension_enabled('U') ? MSTATUS_MPRV : 0)
-                   | MSTATUS_MPP | MSTATUS_TW
+                   | MSTATUS_MPP
+                   | (proc->extension_enabled('U') ? MSTATUS_TW : 0)
                    | (proc->extension_enabled('S') ? MSTATUS_TSR : 0)
                    | (has_page ? MSTATUS_TVM : 0)
                    | (has_gva ? MSTATUS_GVA : 0)
                    | (has_mpv ? MSTATUS_MPV : 0)
                    | (proc->extension_enabled(EXT_SMDBLTRP) ? MSTATUS_MDT : 0)
-                   | (proc->extension_enabled(EXT_ZICFILP) ? (MSTATUS_SPELP | MSTATUS_MPELP) : 0)
-                   | (proc->extension_enabled(EXT_SSDBLTRP) ? SSTATUS_SDT : 0)
+                   | (proc->extension_enabled(EXT_ZICFILP) ? (MSTATUS_MPELP | (proc->extension_enabled('S') ? MSTATUS_SPELP : 0)) : 0)
                    ;
 
   const reg_t requested_mpp = proc->legalize_privilege(get_field(val, MSTATUS_MPP));
   const reg_t adjusted_val = set_field(val, MSTATUS_MPP, requested_mpp);
-  reg_t new_mstatus = (read() & ~mask) | (adjusted_val & mask);
+  reg_t new_mstatus = (this->val & ~mask) | (adjusted_val & mask);
   new_mstatus = (new_mstatus & MSTATUS_MDT) ? (new_mstatus & ~MSTATUS_MIE) : new_mstatus;
   new_mstatus = (new_mstatus & MSTATUS_SDT) ? (new_mstatus & ~MSTATUS_SIE) : new_mstatus;
   maybe_flush_tlb(new_mstatus);
@@ -584,15 +739,15 @@ mnstatus_csr_t::mnstatus_csr_t(processor_t* const proc, const reg_t addr):
 }
 
 bool mnstatus_csr_t::unlogged_write(const reg_t val) noexcept {
-  // NMIE can be set but not cleared
-  const reg_t mask = (~read() & MNSTATUS_NMIE)
+  const reg_t mask = MNSTATUS_NMIE
                    | (proc->extension_enabled('H') ? MNSTATUS_MNPV : 0)
                    | (proc->extension_enabled(EXT_ZICFILP) ? MNSTATUS_MNPELP : 0)
                    | MNSTATUS_MNPP;
 
   const reg_t requested_mnpp = proc->legalize_privilege(get_field(val, MNSTATUS_MNPP));
   const reg_t adjusted_val = set_field(val, MNSTATUS_MNPP, requested_mnpp);
-  const reg_t new_mnstatus = (read() & ~mask) | (adjusted_val & mask);
+  // NMIE can be set but not cleared
+  const reg_t new_mnstatus = (read() & MNSTATUS_NMIE) | (adjusted_val & mask);
 
   return basic_csr_t::unlogged_write(new_mnstatus);
 }
@@ -726,35 +881,30 @@ bool misa_csr_t::unlogged_write(const reg_t val) noexcept {
   const bool prev_h = old_misa & (1L << ('H' - 'A'));
   const reg_t new_misa = (adjusted_val & write_mask) | (old_misa & ~write_mask);
   const bool new_h = new_misa & (1L << ('H' - 'A'));
+  const bool new_v = proc->get_isa().has_any_vector();
 
   proc->set_extension_enable(EXT_ZCA, (new_misa & (1L << ('C' - 'A'))) || !proc->get_isa().extension_enabled('C'));
-  proc->set_extension_enable(EXT_ZCF, (new_misa & (1L << ('F' - 'A'))) && proc->extension_enabled(EXT_ZCA));
+  proc->set_extension_enable(EXT_ZCF, (new_misa & (1L << ('F' - 'A'))) && proc->extension_enabled(EXT_ZCA) && proc->get_xlen() == 32);
   proc->set_extension_enable(EXT_ZCD, (new_misa & (1L << ('D' - 'A'))) && proc->extension_enabled(EXT_ZCA));
   proc->set_extension_enable(EXT_ZCB, proc->extension_enabled(EXT_ZCA));
   proc->set_extension_enable(EXT_ZCMP, proc->extension_enabled(EXT_ZCA));
   proc->set_extension_enable(EXT_ZCMT, proc->extension_enabled(EXT_ZCA));
   proc->set_extension_enable(EXT_ZFH, new_misa & (1L << ('F' - 'A')));
   proc->set_extension_enable(EXT_ZFHMIN, new_misa & (1L << ('F' - 'A')));
-  proc->set_extension_enable(EXT_ZVFH, (new_misa & (1L << ('V' - 'A'))) && proc->extension_enabled(EXT_ZFHMIN));
-  proc->set_extension_enable(EXT_ZVFHMIN, new_misa & (1L << ('V' - 'A')));
+  proc->set_extension_enable(EXT_ZVFH, new_v && proc->get_isa().get_zvf() && proc->extension_enabled(EXT_ZFHMIN));
+  proc->set_extension_enable(EXT_ZVFHMIN, new_v && proc->get_isa().get_zvf());
   proc->set_extension_enable(EXT_ZAAMO, (new_misa & (1L << ('A' - 'A'))) || !proc->get_isa().extension_enabled('A'));
   proc->set_extension_enable(EXT_ZALRSC, (new_misa & (1L << ('A' - 'A'))) || !proc->get_isa().extension_enabled('A'));
   proc->set_extension_enable(EXT_ZBA, (new_misa & (1L << ('B' - 'A'))) || !proc->get_isa().extension_enabled('B'));
   proc->set_extension_enable(EXT_ZBB, (new_misa & (1L << ('B' - 'A'))) || !proc->get_isa().extension_enabled('B'));
   proc->set_extension_enable(EXT_ZBS, (new_misa & (1L << ('B' - 'A'))) || !proc->get_isa().extension_enabled('B'));
 
+  basic_csr_t::unlogged_write(new_misa);
+
   // update the hypervisor-only bits in MEDELEG and other CSRs
   if (!new_h && prev_h) {
-    reg_t hypervisor_exceptions = 0
-      | (1 << CAUSE_VIRTUAL_SUPERVISOR_ECALL)
-      | (1 << CAUSE_FETCH_GUEST_PAGE_FAULT)
-      | (1 << CAUSE_LOAD_GUEST_PAGE_FAULT)
-      | (1 << CAUSE_VIRTUAL_INSTRUCTION)
-      | (1 << CAUSE_STORE_GUEST_PAGE_FAULT)
-      ;
-
-    state->medeleg->write(state->medeleg->read() & ~hypervisor_exceptions);
-    if (state->mnstatus) state->mnstatus->write(state->mnstatus->read() & ~MNSTATUS_MNPV);
+    state->medeleg->write(state->medeleg->read());
+    if (state->mnstatus) state->mnstatus->write(state->mnstatus->read());
     const reg_t new_mstatus = state->mstatus->read() & ~(MSTATUS_GVA | MSTATUS_MPV);
     state->mstatus->write(new_mstatus);
     if (state->mstatush) state->mstatush->write(new_mstatus >> 32);  // log mstatush change
@@ -762,12 +912,16 @@ bool misa_csr_t::unlogged_write(const reg_t val) noexcept {
     state->mip->write_with_mask(MIP_HS_MASK, 0);  // also takes care of hip, sip, hvip
     state->hstatus->write(0);
     for (reg_t i = 0; i < N_HPMCOUNTERS; ++i) {
-      const reg_t new_mevent = state->mevent[i]->read() & ~(MHPMEVENT_VUINH | MHPMEVENT_VSINH);
-      state->mevent[i]->write(new_mevent);
+      state->mevent[i]->write(state->mevent[i]->read());
     }
+    state->mcyclecfg->write(state->mcyclecfg->read());
+    state->minstretcfg->write(state->minstretcfg->read());
   }
 
-  return basic_csr_t::unlogged_write(new_misa);
+  proc->get_mmu()->flush_tlb();
+  proc->build_opcode_map();
+
+  return true;
 }
 
 bool misa_csr_t::extension_enabled_const(unsigned char ext) const noexcept {
@@ -966,8 +1120,11 @@ medeleg_csr_t::medeleg_csr_t(processor_t* const proc, const reg_t addr):
                         | (1 << CAUSE_FETCH_GUEST_PAGE_FAULT)
                         | (1 << CAUSE_LOAD_GUEST_PAGE_FAULT)
                         | (1 << CAUSE_VIRTUAL_INSTRUCTION)
-                        | (1 << CAUSE_STORE_GUEST_PAGE_FAULT)
-                        ) {
+                        | (1 << CAUSE_STORE_GUEST_PAGE_FAULT)),
+  mmu_exceptions(0
+                 | (1 << CAUSE_FETCH_PAGE_FAULT)
+                 | (1 << CAUSE_LOAD_PAGE_FAULT)
+                 | (1 << CAUSE_STORE_PAGE_FAULT)) {
 }
 
 void medeleg_csr_t::verify_permissions(insn_t insn, bool write) const {
@@ -978,7 +1135,7 @@ void medeleg_csr_t::verify_permissions(insn_t insn, bool write) const {
 
 bool medeleg_csr_t::unlogged_write(const reg_t val) noexcept {
   const reg_t mask = 0
-    | (1 << CAUSE_MISALIGNED_FETCH)
+    | (proc->extension_enabled(EXT_ZCA) ? 0 : 1 << CAUSE_MISALIGNED_FETCH)
     | (1 << CAUSE_FETCH_ACCESS)
     | (1 << CAUSE_ILLEGAL_INSTRUCTION)
     | (1 << CAUSE_BREAKPOINT)
@@ -988,14 +1145,14 @@ bool medeleg_csr_t::unlogged_write(const reg_t val) noexcept {
     | (1 << CAUSE_STORE_ACCESS)
     | (1 << CAUSE_USER_ECALL)
     | (1 << CAUSE_SUPERVISOR_ECALL)
-    | (1 << CAUSE_FETCH_PAGE_FAULT)
-    | (1 << CAUSE_LOAD_PAGE_FAULT)
-    | (1 << CAUSE_STORE_PAGE_FAULT)
+    | (proc->has_mmu() ? mmu_exceptions : 0)
     | (proc->extension_enabled('H') ? hypervisor_exceptions : 0)
-    | (1 << CAUSE_SOFTWARE_CHECK_FAULT)
-    | (1 << CAUSE_HARDWARE_ERROR_FAULT)
+    | ((proc->extension_enabled(EXT_ZICFISS) || proc->extension_enabled(EXT_ZICFILP))?
+        (1 << CAUSE_SOFTWARE_CHECK_FAULT) : 0)
+    | (proc->extension_enabled(EXT_ZICNTR)?
+        (1 << CAUSE_HARDWARE_ERROR_FAULT) : 0)
     ;
-  return basic_csr_t::unlogged_write((read() & ~mask) | (val & mask));
+  return basic_csr_t::unlogged_write(val & mask);
 }
 
 sip_csr_t::sip_csr_t(processor_t* const proc, const reg_t addr, generic_int_accessor_t_p accr):
@@ -1073,7 +1230,7 @@ base_atp_csr_t::base_atp_csr_t(processor_t* const proc, const reg_t addr):
 }
 
 bool base_atp_csr_t::unlogged_write(const reg_t val) noexcept {
-  const reg_t newval = proc->supports_impl(IMPL_MMU) ? compute_new_satp(val) : 0;
+  const reg_t newval = proc->has_mmu() ? compute_new_satp(val) : 0;
   if (newval != read())
     proc->get_mmu()->flush_tlb();
   return basic_csr_t::unlogged_write(newval);
@@ -1082,16 +1239,16 @@ bool base_atp_csr_t::unlogged_write(const reg_t val) noexcept {
 bool base_atp_csr_t::satp_valid(reg_t val) const noexcept {
   if (proc->get_xlen() == 32) {
     switch (get_field(val, SATP32_MODE)) {
-      case SATP_MODE_SV32: return proc->supports_impl(IMPL_MMU_SV32);
       case SATP_MODE_OFF: return true;
+      case SATP_MODE_SV32: return proc->get_max_vaddr_bits() >= 32;
       default: return false;
     }
   } else {
     switch (get_field(val, SATP64_MODE)) {
-      case SATP_MODE_SV39: return proc->supports_impl(IMPL_MMU_SV39);
-      case SATP_MODE_SV48: return proc->supports_impl(IMPL_MMU_SV48);
-      case SATP_MODE_SV57: return proc->supports_impl(IMPL_MMU_SV57);
       case SATP_MODE_OFF: return true;
+      case SATP_MODE_SV39: return proc->get_max_vaddr_bits() >= 39;
+      case SATP_MODE_SV48: return proc->get_max_vaddr_bits() >= 48;
+      case SATP_MODE_SV57: return proc->get_max_vaddr_bits() >= 57;
       default: return false;
     }
   }
@@ -1285,7 +1442,7 @@ bool mevent_csr_t::unlogged_write(const reg_t val) noexcept {
     | (proc->extension_enabled_const('U') ? MHPMEVENT_UINH : 0)
     | (proc->extension_enabled_const('S') ? MHPMEVENT_SINH : 0)
     | (proc->extension_enabled('H') ? MHPMEVENT_VUINH | MHPMEVENT_VSINH : 0) : 0;
-  return basic_csr_t::unlogged_write((read() & ~mask) | (val & mask));
+  return basic_csr_t::unlogged_write(val & mask);
 }
 
 hypervisor_csr_t::hypervisor_csr_t(processor_t* const proc, const reg_t addr):
@@ -1330,9 +1487,9 @@ bool hgatp_csr_t::unlogged_write(const reg_t val) noexcept {
         (proc->supports_impl(IMPL_MMU_VMID) ? HGATP64_VMID : 0);
 
     if (get_field(val, HGATP64_MODE) == HGATP_MODE_OFF ||
-        (proc->supports_impl(IMPL_MMU_SV39) && get_field(val, HGATP64_MODE) == HGATP_MODE_SV39X4) ||
-        (proc->supports_impl(IMPL_MMU_SV48) && get_field(val, HGATP64_MODE) == HGATP_MODE_SV48X4) ||
-        (proc->supports_impl(IMPL_MMU_SV57) && get_field(val, HGATP64_MODE) == HGATP_MODE_SV57X4))
+        (proc->get_max_vaddr_bits() >= 39 && get_field(val, HGATP64_MODE) == HGATP_MODE_SV39X4) ||
+        (proc->get_max_vaddr_bits() >= 48 && get_field(val, HGATP64_MODE) == HGATP_MODE_SV48X4) ||
+        (proc->get_max_vaddr_bits() >= 57 && get_field(val, HGATP64_MODE) == HGATP_MODE_SV57X4))
       mask |= HGATP64_MODE;
   }
   mask &= ~(reg_t)3;
@@ -1588,7 +1745,7 @@ void vector_csr_t::write_raw(const reg_t val) noexcept {
 
 bool vector_csr_t::unlogged_write(const reg_t val) noexcept {
   if (mask == 0) return false;
-  dirty_vs_state;
+  STATE.sstatus->dirty(SSTATUS_VS);
   return basic_csr_t::unlogged_write(val & mask);
 }
 
@@ -1597,12 +1754,13 @@ vxsat_csr_t::vxsat_csr_t(processor_t* const proc, const reg_t addr):
 }
 
 void vxsat_csr_t::verify_permissions(insn_t insn, bool write) const {
-  require(proc->any_vector_extensions() && STATE.sstatus->enabled(SSTATUS_VS));
+  require(!proc->any_vector_extensions() || STATE.sstatus->enabled(SSTATUS_VS));
   masked_csr_t::verify_permissions(insn, write);
 }
 
 bool vxsat_csr_t::unlogged_write(const reg_t val) noexcept {
-  dirty_vs_state;
+  if (proc->any_vector_extensions())
+    STATE.sstatus->dirty(SSTATUS_VS);
   return masked_csr_t::unlogged_write(val);
 }
 
@@ -1777,10 +1935,12 @@ reg_t scountovf_csr_t::read() const noexcept {
     val |= of << (i + FIRST_HPMCOUNTER);
   }
 
-  /* In M and S modes, scountovf bit X is readable when mcounteren bit X is set, */
+  /* In M-mode, scountovf bit X is always readable. */
+  /* In S/HS-mode, scountovf bit X is readable when mcounteren bit X is set, */
   /* and otherwise reads as zero. Similarly, in VS mode, scountovf bit X is readable */
   /* when mcounteren bit X and hcounteren bit X are both set, and otherwise reads as zero. */
-  val &= state->mcounteren->read();
+  if (state->prv < PRV_M)
+    val &= state->mcounteren->read();
   if (state->v)
     val &= state->hcounteren->read();
   return val;
@@ -1839,64 +1999,69 @@ void sscsrind_reg_csr_t::verify_permissions(insn_t insn, bool write) const {
   if (proc->extension_enabled(EXT_SMSTATEEN)) {
     if ((state->prv < PRV_M) && !(state->mstateen[0]->read() & MSTATEEN0_CSRIND))
       throw trap_illegal_instruction(insn.bits());
+
+    if (state->v && !(state->hstateen[0]->read() & HSTATEEN0_CSRIND))
+      throw trap_virtual_instruction(insn.bits());
+  }
+
+  if (state->v && state->prv == PRV_U) {
+     throw trap_virtual_instruction(insn.bits());
   }
 
   // Don't call base verify_permission for VS registers remapped to S-mode
   if (insn.csr() == address)
     csr_t::verify_permissions(insn, write);
 
-  if (proc->extension_enabled(EXT_SMSTATEEN)) {
-    if (state->v && !(state->hstateen[0]->read() & HSTATEEN0_CSRIND))
-      throw trap_virtual_instruction(insn.bits());
-  }
-
   if (proc->extension_enabled(EXT_SMCDELEG)) {
-    if (insn.csr() >= CSR_VSIREG && insn.csr() <= CSR_VSIREG6) {
-      if (!state->v) {
-        // An attempt to access any vsireg* from M or S mode raises an illegal instruction exception.
-        throw trap_illegal_instruction(insn.bits());
-      } else {
-        if (state->prv == PRV_S) {
-          // An attempt from VS-mode to access any vsireg raises an illegal instruction
-          // exception if menvcfg.CDE = 0, or a virtual instruction exception if menvcfg.CDE = 1
-          if ((state->menvcfg->read() & MENVCFG_CDE) != MENVCFG_CDE) {
-            throw trap_illegal_instruction(insn.bits());
-          } else {
-            throw trap_virtual_instruction(insn.bits());
-          }
-        } else {
-          throw trap_virtual_instruction(insn.bits());
-        }
-      }
-    }
-    if (insn.csr() >= CSR_SIREG && insn.csr() <= CSR_SIREG6) {
-      // attempts to access any sireg* when menvcfg.CDE = 0;
-      if ((state->menvcfg->read() & MENVCFG_CDE) != MENVCFG_CDE) {
+    auto iselect_val = iselect->read();
+    if (iselect_val >= SISELECT_SMCDELEG_START && iselect_val <= SISELECT_SMCDELEG_END) {
+      if (address >= CSR_VSIREG && address <= CSR_VSIREG6) {
         if (!state->v) {
+          // An attempt to access any vsireg* from M or S mode raises an illegal instruction exception.
           throw trap_illegal_instruction(insn.bits());
         } else {
           if (state->prv == PRV_S) {
-            // An attempt from VS-mode to access any sireg* causes illegal instruction exception if menvcfg.CDE = 0
-            throw trap_illegal_instruction(insn.bits());
+            // An attempt from VS-mode to access any vsireg raises an illegal instruction
+            // exception if menvcfg.CDE = 0, or a virtual instruction exception if menvcfg.CDE = 1
+            if ((state->menvcfg->read() & MENVCFG_CDE) != MENVCFG_CDE) {
+              throw trap_illegal_instruction(insn.bits());
+            } else {
+              throw trap_virtual_instruction(insn.bits());
+            }
           } else {
             throw trap_virtual_instruction(insn.bits());
           }
         }
-      } else {
-        // menvcfg.CDE = 1;
-        if (state->v) {
-          // An attempt from VS-mode to access any sireg* causes a virtual instruction exception if menvcfg.CDE = 1
-          throw trap_virtual_instruction(insn.bits());
-        }
-        // counter selected by siselect is not delegated to S-mode (the corresponding bit in mcounteren = 0).
-        auto iselect_addr = iselect->read();
-        if (iselect_addr >= SISELECT_SMCDELEG_START && iselect_addr <= SISELECT_SMCDELEG_END) {
-          reg_t counter_id_offset = iselect_addr - SISELECT_SMCDELEG_START;
-          if (!(state->mcounteren->read() & (1U << counter_id_offset))) {
-            if (!state->v) {
+      }
+      if (address >= CSR_SIREG && address <= CSR_SIREG6) {
+        // attempts to access any sireg* when menvcfg.CDE = 0;
+        if ((state->menvcfg->read() & MENVCFG_CDE) != MENVCFG_CDE) {
+          if (!state->v) {
+            throw trap_illegal_instruction(insn.bits());
+          } else {
+            if (state->prv == PRV_S) {
+              // An attempt from VS-mode to access any sireg* causes illegal instruction exception if menvcfg.CDE = 0
               throw trap_illegal_instruction(insn.bits());
             } else {
               throw trap_virtual_instruction(insn.bits());
+            }
+          }
+        } else {
+          // menvcfg.CDE = 1;
+          if (state->v) {
+            // An attempt from VS-mode to access any sireg* causes a virtual instruction exception if menvcfg.CDE = 1
+            throw trap_virtual_instruction(insn.bits());
+          }
+          // counter selected by siselect is not delegated to S-mode (the corresponding bit in mcounteren = 0).
+          auto iselect_addr = iselect->read();
+          if (iselect_addr >= SISELECT_SMCDELEG_START && iselect_addr <= SISELECT_SMCDELEG_END) {
+            reg_t counter_id_offset = iselect_addr - SISELECT_SMCDELEG_START;
+            if (!(state->mcounteren->read() & (1U << counter_id_offset))) {
+              if (!state->v) {
+                throw trap_illegal_instruction(insn.bits());
+              } else {
+                throw trap_virtual_instruction(insn.bits());
+              }
             }
           }
         }
@@ -1906,10 +2071,15 @@ void sscsrind_reg_csr_t::verify_permissions(insn_t insn, bool write) const {
 
   csr_t_p proxy_csr = get_reg();
   if (proxy_csr == nullptr) {
-    if (!state->v) {
-      throw trap_illegal_instruction(insn.bits());
+    // An attempt from VS-mode to access any inaccessible sireg* causes virtual instruction exception when AIA is enabled
+    if (proc->extension_enabled_const(EXT_SMAIA)) {
+      if (state->prv == PRV_S && state->v) {
+        throw trap_virtual_instruction(insn.bits());
+      } else {
+        throw trap_illegal_instruction(insn.bits());
+      }
     } else {
-      throw trap_virtual_instruction(insn.bits());
+      throw trap_illegal_instruction(insn.bits());
     }
   }
   proxy_csr->verify_permissions(insn, write);
@@ -1944,7 +2114,7 @@ void sscsrind_reg_csr_t::add_ireg_proxy(const reg_t iselect_value, csr_t_p csr) 
   ireg_proxy[iselect_value] = csr;
 }
 
-smcntrpmf_csr_t::smcntrpmf_csr_t(processor_t* const proc, const reg_t addr, const reg_t mask, const reg_t init) : masked_csr_t(proc, addr, mask, init) {
+smcntrpmf_csr_t::smcntrpmf_csr_t(processor_t* const proc, const reg_t addr) : basic_csr_t(proc, addr, 0) {
 }
 
 reg_t smcntrpmf_csr_t::read_prev() const noexcept {
@@ -1958,7 +2128,14 @@ void smcntrpmf_csr_t::reset_prev() noexcept {
 
 bool smcntrpmf_csr_t::unlogged_write(const reg_t val) noexcept {
   prev_val = read();
-  return masked_csr_t::unlogged_write(val);
+
+  const reg_t mask = !proc->extension_enabled_const(EXT_SMCNTRPMF) ? 0 :
+    MHPMEVENT_MINH |
+    (proc->extension_enabled_const('S') ? MHPMEVENT_SINH : 0) |
+    (proc->extension_enabled_const('U') ? MHPMEVENT_UINH : 0) |
+    (proc->extension_enabled('H') ? MHPMEVENT_VSINH | MHPMEVENT_VUINH : 0);
+
+  return basic_csr_t::unlogged_write(val & mask);
 }
 
 srmcfg_csr_t::srmcfg_csr_t(processor_t* const proc, const reg_t addr, const reg_t mask, const reg_t init):
@@ -2020,8 +2197,9 @@ hstatus_csr_t::hstatus_csr_t(processor_t* const proc, const reg_t addr):
 }
 
 bool hstatus_csr_t::unlogged_write(const reg_t val) noexcept {
-  const reg_t mask = HSTATUS_VTSR | HSTATUS_VTW
-    | (proc->supports_impl(IMPL_MMU) ? HSTATUS_VTVM : 0)
+  const reg_t mask = (proc->extension_enabled(EXT_SVUKTE) ? HSTATUS_HUKTE  : 0)
+    | HSTATUS_VTSR | HSTATUS_VTW
+    | (proc->has_mmu() ? HSTATUS_VTVM : 0)
     | (proc->extension_enabled(EXT_SSNPM) ? HSTATUS_HUPMM : 0)
     | HSTATUS_HU | HSTATUS_SPVP | HSTATUS_SPV | HSTATUS_GVA;
 

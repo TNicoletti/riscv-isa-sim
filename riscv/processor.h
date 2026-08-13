@@ -61,6 +61,13 @@ struct insn_desc_t
   static const insn_desc_t illegal_instruction;
 };
 
+struct opcode_map_entry_t
+{
+  insn_bits_t match;
+  insn_bits_t mask;
+  insn_func_t func;
+};
+
 // regnum, data
 typedef std::map<reg_t, freg_t> commit_log_reg_t;
 
@@ -70,7 +77,7 @@ typedef std::vector<std::tuple<reg_t, uint64_t, uint8_t>> commit_log_mem_t;
 // architectural state of a RISC-V hart
 struct state_t
 {
-  void add_ireg_proxy(processor_t* const proc, sscsrind_reg_csr_t::sscsrind_reg_csr_t_p ireg);
+  void add_iprio_proxy(processor_t* const proc, sscsrind_reg_csr_t_p ireg);
   void reset(processor_t* const proc, reg_t max_isa);
   void add_csr(reg_t addr, const csr_t_p& csr);
 
@@ -93,6 +100,8 @@ struct state_t
   csr_t_p mtval;
   csr_t_p mtvec;
   csr_t_p mcause;
+  smcntrpmf_csr_t_p minstretcfg;
+  smcntrpmf_csr_t_p mcyclecfg;
   wide_counter_csr_t_p minstret;
   wide_counter_csr_t_p mcycle;
   mie_csr_t_p mie;
@@ -155,10 +164,14 @@ struct state_t
   csr_t_p mseccfgh;
 
   static const int max_pmp = 64;
-  pmpaddr_csr_t_p pmpaddr[max_pmp];
+  csr_t_p mpmpdeleg;
+  base_pmpaddr_csr_t_p pmpaddr[max_pmp];
+  csr_t_p spmpen;
 
   float_csr_t_p fflags;
   float_csr_t_p frm;
+
+  csr_t_p vxsat;
 
   csr_t_p menvcfg;
   csr_t_p senvcfg;
@@ -176,6 +189,10 @@ struct state_t
   csr_t_p vstimecmp;
 
   csr_t_p ssp;
+
+  sscsrind_reg_csr_t_p mireg[6];
+  sscsrind_reg_csr_t_p vsireg[6];
+  sscsrind_reg_csr_t_p nonvirtual_sireg[6];
 
   csr_t_p mvien;
   mvip_csr_t_p mvip;
@@ -205,47 +222,6 @@ struct state_t
 
  private:
   void csr_init(processor_t* const proc, reg_t max_isa);
-};
-
-class opcode_cache_entry_t {
- public:
-  opcode_cache_entry_t()
-  {
-    reset();
-  }
-
-  void reset()
-  {
-    for (size_t i = 0; i < associativity; i++) {
-      tag[i] = 0;
-      contents[i] = &insn_desc_t::illegal_instruction;
-    }
-  }
-
-  void replace(insn_bits_t opcode, const insn_desc_t* desc)
-  {
-    for (size_t i = associativity - 1; i > 0; i--) {
-      tag[i] = tag[i-1];
-      contents[i] = contents[i-1];
-    }
-
-    tag[0] = opcode;
-    contents[0] = desc;
-  }
-
-  std::tuple<bool, const insn_desc_t*> lookup(insn_bits_t opcode)
-  {
-    for (size_t i = 0; i < associativity; i++)
-      if (tag[i] == opcode)
-        return std::tuple(true, contents[i]);
-
-    return std::tuple(false, nullptr);
-  }
-
- private:
-  static const size_t associativity = 4;
-  insn_bits_t tag[associativity];
-  const insn_desc_t* contents[associativity];
 };
 
 // this class represents one processor in a RISC-V machine.
@@ -324,6 +300,9 @@ public:
     extension_enable_table[ext] = enable && isa.extension_enabled(ext);
   }
   void set_impl(uint8_t impl, bool val) { impl_table[impl] = val; }
+  bool has_mmu() const { return max_vaddr_bits != 0; }
+  unsigned get_max_vaddr_bits() const { return max_vaddr_bits; }
+  void set_max_vaddr_bits(unsigned);
   bool supports_impl(uint8_t impl) const {
     return impl_table[impl];
   }
@@ -331,10 +310,10 @@ public:
     const int ialign = extension_enabled(EXT_ZCA) ? 16 : 32;
     return ~(reg_t)(ialign == 16 ? 0 : 2);
   }
-  void check_pc_alignment(reg_t pc) {
-    if (unlikely(pc & ~pc_alignment_mask()))
-      throw trap_instruction_address_misaligned(state.v, pc, 0, 0);
+  void set_vxsat() {
+    state.vxsat->write(1);
   }
+  reg_t throw_instruction_address_misaligned(reg_t pc);
   reg_t legalize_privilege(reg_t);
   void set_privilege(reg_t, bool);
   const char* get_privilege_string() const;
@@ -344,12 +323,13 @@ public:
   FILE *get_log_file() { return log_file; }
 
   void register_base_insn(insn_desc_t insn) {
-    register_insn(insn, false /* is_custom */);
+    register_insn(insn, instructions);
   }
   void register_custom_insn(insn_desc_t insn) {
-    register_insn(insn, true /* is_custom */);
+    register_insn(insn, custom_instructions);
   }
   void register_extension(extension_t*);
+  void build_opcode_map();
 
   // MMIO slave interface
   bool load(reg_t addr, size_t len, uint8_t* bytes) override;
@@ -371,7 +351,7 @@ public:
 
   void set_pmp_num(reg_t pmp_num);
   void set_pmp_granularity(reg_t pmp_granularity);
-  void set_mmu_capability(int cap);
+  void set_spmp_addr_entry();
 
   const char* get_symbol(uint64_t addr);
 
@@ -379,6 +359,7 @@ public:
   bool is_waiting_for_interrupt() { return in_wfi; };
 
   void check_if_lpad_required();
+  reg_t set_lpad_expected(reg_t pc);
 
   reg_t select_an_interrupt_with_default_priority(reg_t enabled_interrupts) const;
 
@@ -393,6 +374,7 @@ private:
   state_t state;
   uint32_t id;
   unsigned xlen;
+  unsigned max_vaddr_bits;
   bool histogram_enabled;
   bool log_commits_enabled;
   FILE *log_file;
@@ -407,22 +389,17 @@ private:
   std::bitset<NUM_ISA_EXTENSIONS> extension_dynamic;
   mutable std::bitset<NUM_ISA_EXTENSIONS> extension_assumed_const;
 
+  std::vector<opcode_map_entry_t> opcode_map[128];
   std::vector<insn_desc_t> instructions;
   std::vector<insn_desc_t> custom_instructions;
   std::unordered_map<reg_t,uint64_t> pc_histogram;
-
-  static const size_t OPCODE_CACHE_SIZE = 4095;
-  opcode_cache_entry_t opcode_cache[OPCODE_CACHE_SIZE];
-
-  unsigned ziccid_flush_count = 0;
-  static const unsigned ZICCID_FLUSH_PERIOD = 10;
 
   void take_pending_interrupt() { take_interrupt(state.mip->read() & state.mie->read()); }
   void take_interrupt(reg_t mask); // take first enabled interrupt in mask
   void take_trap(trap_t& t, reg_t epc); // take an exception
   void take_trigger_action(triggers::action_t action, reg_t breakpoint_tval, reg_t epc, bool virt);
   void disasm(insn_t insn); // disassemble and print an instruction
-  void register_insn(insn_desc_t, bool);
+  void register_insn(insn_desc_t, std::vector<insn_desc_t>& pool);
 
   void enter_debug_mode(uint8_t cause, uint8_t ext_cause);
 
@@ -434,7 +411,6 @@ private:
   friend class extension_t;
 
   void parse_priv_string(const char*);
-  void build_opcode_map();
   void register_base_instructions();
   insn_func_t decode_insn(insn_t insn);
 

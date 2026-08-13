@@ -13,6 +13,14 @@
 // Predicate Macros
 //
 
+// Ensures that the ZVKB extension (vector crypto bitmanip subset) is present,
+// and the vector unit is enabled and in a valid state.
+#define require_zvkb \
+  do { \
+    require_vector(true); \
+    require_extension(EXT_ZVKB); \
+  } while (0)
+
 // Ensures that the ZVBB extension (vector crypto bitmanip) is present,
 // and the vector unit is enabled and in a valid state.
 #define require_zvbb \
@@ -314,7 +322,7 @@
       VV_VD_VS1_VS2_EGU32x4_PARAMS(vd_num, vs1_num, vs2_num, idx_eg); \
       EG_BODY \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 32b*8 element groups available in the vector register
@@ -369,7 +377,7 @@
       VV_VD_VS1_VS2_EGU32x8_PARAMS(vd_num, vs1_num, vs2_num, idx_eg); \
       EG_BODY \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 32b*4 element groups available in the vector register
@@ -437,7 +445,7 @@
         EG_BODY \
       } \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 32b*4 element groups available in the vector register
@@ -505,7 +513,7 @@
         EG_BODY \
       } \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 32b*4 element groups available in the vector registers
@@ -552,7 +560,7 @@
       VV_VD_VS2_EGU32x4_PARAMS(vd_num, vs2_num, idx_eg); \
       EG_BODY \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 32b*4 element groups available in the vector registers
@@ -608,7 +616,7 @@
         EG_BODY \
       } \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 32b*8 element groups available in the vector registers
@@ -664,7 +672,7 @@
         EG_BODY \
       } \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 // Processes all 64b*4 element groups available in the vector registers
@@ -718,7 +726,7 @@
       VV_VD_VS1_VS2_EGU64x4_PARAMS(vd_num, vs1_num, vs2_num, idx_eg); \
       EG_BODY \
     } \
-    P.VU.vstart->write(0); \
+    VECTOR_END; \
   } while (0)
 
 

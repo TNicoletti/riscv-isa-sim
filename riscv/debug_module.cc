@@ -38,7 +38,7 @@ static unsigned field_width(unsigned n)
 
 static bool region_descriptor_comparator(const region_descriptor &lhs,
                                   const region_descriptor &rhs) {
-  return lhs.addr < rhs.addr;
+  return lhs.addr < rhs.addr || (lhs.addr == rhs.addr && lhs.len < rhs.len);
 }
 
 template <typename It>
@@ -1040,8 +1040,6 @@ bool debug_module_t::dmi_write(unsigned address, uint32_t value)
           dmcontrol.ndmreset = get_field(value, DM_DMCONTROL_NDMRESET);
           if (config.support_hasel)
             dmcontrol.hasel = get_field(value, DM_DMCONTROL_HASEL);
-          else
-            dmcontrol.hasel = 0;
           dmcontrol.hartsel = get_field(value, DM_DMCONTROL_HARTSELHI) <<
             DM_DMCONTROL_HARTSELLO_LENGTH;
           dmcontrol.hartsel |= get_field(value, DM_DMCONTROL_HARTSELLO);
@@ -1101,10 +1099,12 @@ bool debug_module_t::dmi_write(unsigned address, uint32_t value)
         return true;
 
       case DM_ABSTRACTAUTO:
-        abstractauto.autoexecprogbuf = get_field(value,
-            DM_ABSTRACTAUTO_AUTOEXECPROGBUF);
-        abstractauto.autoexecdata = get_field(value,
-            DM_ABSTRACTAUTO_AUTOEXECDATA);
+        if (config.support_abstractauto) {
+          abstractauto.autoexecprogbuf = get_field(value,
+              DM_ABSTRACTAUTO_AUTOEXECPROGBUF);
+          abstractauto.autoexecdata = get_field(value,
+              DM_ABSTRACTAUTO_AUTOEXECDATA);
+        }
         return true;
       case DM_SBCS:
         sbcs.readonaddr = get_field(value, DM_SBCS_SBREADONADDR);
