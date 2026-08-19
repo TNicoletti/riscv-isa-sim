@@ -158,6 +158,7 @@ inline void processor_t::update_histogram(reg_t pc)
 
 extern uint32_t ill_instruction;
 extern uint32_t faulty_instruction;
+extern uint32_t RAW_register;
 
 
 // These two functions are expected to be inlined by the compiler separately in
@@ -214,6 +215,8 @@ bool processor_t::slow_path() const
 // fetch/decode/execute loop
 void processor_t::step(size_t n)
 {
+  int just_wrote_RAW_register = 0;
+
   mmu_t* _mmu = mmu;
 
   if (!state.debug_mode) {
@@ -339,6 +342,19 @@ void processor_t::step(size_t n)
             // 3. OVERWRITE the I-Cache entry for this PC so the loop uses your modified fetch!
             auto ic_entry = _mmu->access_icache(pc);
             ic_entry->data = fetch;
+          }
+
+          int is_vector_op = insn.opcode() == 0x57 || insn.opcode() == 0x07 || insn.opcode() == 0x27;
+
+          if(just_wrote_RAW_register == 1 && is_vector_op &&
+            insn.rs1() == RAW_register
+          )
+            throw trap_illegal_instruction(insn.bits());
+
+          if (RAW_register != -1 && insn.rd() == RAW_register && is_vector_op) {
+            just_wrote_RAW_register = 1;
+          }else{
+            just_wrote_RAW_register = 0;
           }
 
         // Main simulation loop, fast path.

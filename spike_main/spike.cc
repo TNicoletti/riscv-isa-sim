@@ -320,6 +320,7 @@ static std::vector<size_t> parse_hartids(const char *s)
 
 int  ill_instruction = 0;
 int  faulty_instruction = 0;
+int  RAW_register = -1;
 int main(int argc, char** argv)
 {
   bool dump_memory = false;
@@ -384,6 +385,9 @@ int main(int argc, char** argv)
   });
   parser.option(0, "faulty-instruction", 1, [&](const char* s){
     faulty_instruction = strtoull(s, 0, 16);
+  });
+  parser.option(0, "RAW-register", 1, [&](const char* s){
+    RAW_register = strtoull(s, 0, 16);
   });
   parser.option('d', 0, 0, [&](const char UNUSED *s){debug = true;});
   parser.option('g', 0, 0, [&](const char UNUSED *s){histogram = true;});
@@ -500,6 +504,21 @@ int main(int argc, char** argv)
   if (!*argv1)
     help();
 
+  if(ill_instruction != 0)
+  {
+    printf("<SPIKE> illegal instruction: %d\n", ill_instruction);
+  }
+
+  if(faulty_instruction != 0)
+  {
+    printf("<SPIKE> faulty instruction: %d\n", faulty_instruction);
+  }
+
+  if(RAW_register != -1)
+  {
+    printf("<SPIKE> RAW register issue: %d\n", RAW_register);
+  }
+
   std::vector<std::pair<reg_t, abstract_mem_t*>> mems =
       make_mems(cfg.mem_layout);
 
@@ -595,15 +614,6 @@ int main(int argc, char** argv)
 
   auto return_code = s.run();
 
-  if(ill_instruction != 0)
-  {
-    printf("<SPIKE> illegal instruction: %d\n", ill_instruction);
-  }
-
-  if(faulty_instruction != 0)
-  {
-    printf("<SPIKE> faulty instruction: %d\n", faulty_instruction);
-  }
 
   if(dump_memory){
     for (unsigned i = 0; i < mems.size(); i++) {
