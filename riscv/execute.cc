@@ -290,16 +290,37 @@ void processor_t::step(size_t n)
           in_wfi = false;
           insn_fetch_t fetch = mmu->load_insn(pc);
           insn_t insn = fetch.insn;
-          //uint32_t fault_insn_mask = 0xFC00707F;
           uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
 
           if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) 
             throw trap_illegal_instruction(insn.bits());
 
-          if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
-            //insn.opcode(insn.opcode() + 1);
+           if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
+            uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+            insn_t new_insn(modified_bits);
+
+            fetch = insn_fetch_t{
+              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+              new_insn
+            };
+
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
           }
 
+          int is_vector_op = insn.opcode() == 0x57 || insn.opcode() == 0x07 || insn.opcode() == 0x27;
+
+          if(just_wrote_RAW_register == 1 && is_vector_op &&
+            (insn.rs1() == RAW_register || insn.rs2() == RAW_register)
+          ){
+            throw trap_illegal_instruction(insn.bits());
+          }
+
+          if (RAW_register != -1 && insn.rd() == RAW_register && is_vector_op) {
+            just_wrote_RAW_register = 1;
+          }else{
+            just_wrote_RAW_register = 0;
+          }
           if (debug && !state.serialized)
             disasm(fetch.insn);
           pc = execute_insn_logged(this, pc, fetch);
@@ -321,7 +342,6 @@ void processor_t::step(size_t n)
       {
           insn_fetch_t fetch = mmu->load_insn(pc);
           insn_t insn = fetch.insn;
-          //uint32_t fault_insn_mask = 0xFC00707F;
           uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
 
           if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) {
@@ -347,9 +367,10 @@ void processor_t::step(size_t n)
           int is_vector_op = insn.opcode() == 0x57 || insn.opcode() == 0x07 || insn.opcode() == 0x27;
 
           if(just_wrote_RAW_register == 1 && is_vector_op &&
-            insn.rs1() == RAW_register
-          )
+            (insn.rs1() == RAW_register || insn.rs2() == RAW_register)
+          ){
             throw trap_illegal_instruction(insn.bits());
+          }
 
           if (RAW_register != -1 && insn.rd() == RAW_register && is_vector_op) {
             just_wrote_RAW_register = 1;
