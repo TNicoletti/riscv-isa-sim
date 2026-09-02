@@ -7,6 +7,7 @@
 #include "decode_macros.h"
 #include <cassert>
 
+
 static void commit_log_reset(processor_t* p)
 {
   p->get_state()->log_reg_write.clear();
@@ -158,7 +159,9 @@ inline void processor_t::update_histogram(reg_t pc)
 
 extern uint32_t ill_instruction;
 extern uint32_t faulty_instruction;
-extern uint32_t RAW_register;
+extern int32_t RAW_register;
+extern int32_t ndb_fault;
+extern float ndb_chance;
 
 
 // These two functions are expected to be inlined by the compiler separately in
@@ -210,6 +213,23 @@ bool processor_t::slow_path() const
 {
   return debug || state.single_step != state.STEP_NONE || state.debug_mode ||
          log_commits_enabled || histogram_enabled || in_wfi || check_triggers_icount;
+}
+
+int is_vector_operation(int32_t raw){
+  uint32_t opcode = raw & 0x7F;
+  uint32_t funct3 = (raw >> 12) & 0x07;
+  uint32_t mop    = (raw >> 26) & 0x03;
+
+  int is_vector_op = 0;
+  if (opcode == 0x57) {
+    // 0x57 é vetorial SOMENTE se funct3 não for 0x7 (que é reservado para OP-FP escalar)
+    is_vector_op = (funct3 != 0x7);
+  } 
+  else if (opcode == 0x07 || opcode == 0x27) {
+    bool is_fp_scalar = (mop == 0) && (funct3 == 0x2 || funct3 == 0x3); // 010 (32-bit), 011 (64-bit)
+    is_vector_op = !is_fp_scalar;
+  }
+  return is_vector_op;
 }
 
 // fetch/decode/execute loop
@@ -364,7 +384,9 @@ void processor_t::step(size_t n)
             ic_entry->data = fetch;
           }
 
-          int is_vector_op = insn.opcode() == 0x57 || insn.opcode() == 0x07 || insn.opcode() == 0x27;
+          
+
+          int is_vector_op = is_vector_operation(insn.bits());
 
           if(just_wrote_RAW_register == 1 && is_vector_op &&
             (insn.rs1() == RAW_register || insn.rs2() == RAW_register)
@@ -376,6 +398,49 @@ void processor_t::step(size_t n)
             just_wrote_RAW_register = 1;
           }else{
             just_wrote_RAW_register = 0;
+          }
+
+          if(is_vector_op && ndb_chance >= (float)rand() / (float)RAND_MAX){
+            if (ndb_fault == 0){
+              uint32_t vd = insn.bits() & 0x1f;
+
+              uint32_t modified_bits =
+                  0x5C000057 | (vd << 7);
+
+              insn_t new_insn(modified_bits);
+
+              fetch = insn_fetch_t{
+                decode_insn(new_insn),
+                new_insn
+              };
+
+              auto ic_entry = _mmu->access_icache(pc);
+              ic_entry->data = fetch;
+            } else if(ndb_fault == 1){
+              // Flip set bit in instruction
+              uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+              insn_t new_insn(modified_bits);
+  
+              fetch = insn_fetch_t{
+                decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+                new_insn
+              };
+  
+              auto ic_entry = _mmu->access_icache(pc);
+              ic_entry->data = fetch;
+            } else if(ndb_fault == 2){
+              // Do nothing(NOP)
+              uint32_t modified_bits = 0x00000013; // Example mutation
+              insn_t new_insn(modified_bits);
+  
+              fetch = insn_fetch_t{
+                decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+                new_insn
+              };
+  
+              auto ic_entry = _mmu->access_icache(pc);
+              ic_entry->data = fetch;
+            }
           }
 
         // Main simulation loop, fast path.

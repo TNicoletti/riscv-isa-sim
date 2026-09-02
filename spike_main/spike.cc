@@ -23,6 +23,8 @@
 #include <map>
 #include "../VERSION"
 
+#include <time.h>
+
 static void help(int exit_code = 1)
 {
   fprintf(stderr, "Spike RISC-V ISA Simulator " SPIKE_VERSION "\n\n");
@@ -321,6 +323,8 @@ static std::vector<size_t> parse_hartids(const char *s)
 int  ill_instruction = 0;
 int  faulty_instruction = 0;
 int  RAW_register = -1;
+int  ndb_fault = 0;
+float  ndb_chance = 0;
 int main(int argc, char** argv)
 {
   bool dump_memory = false;
@@ -389,6 +393,15 @@ int main(int argc, char** argv)
   parser.option(0, "RAW-register", 1, [&](const char* s){
     RAW_register = strtoull(s, 0, 16);
   });
+
+  parser.option(0, "ndb-chance", 1, [&](const char* s){
+    ndb_chance = (float)atof(s);
+  });
+
+  parser.option(0, "ndb-fault", 1, [&](const char* s){
+    ndb_fault = strtoull(s, 0, 16);
+  });
+
   parser.option('d', 0, 0, [&](const char UNUSED *s){debug = true;});
   parser.option('g', 0, 0, [&](const char UNUSED *s){histogram = true;});
   parser.option('l', 0, 0, [&](const char UNUSED *s){log = true;});
@@ -506,18 +519,26 @@ int main(int argc, char** argv)
 
   if(ill_instruction != 0)
   {
-    printf("<SPIKE> illegal instruction: %d\n", ill_instruction);
+    printf("<SPIKE_DMG> illegal instruction: %d\n", ill_instruction);
   }
 
   if(faulty_instruction != 0)
   {
-    printf("<SPIKE> faulty instruction: %d\n", faulty_instruction);
+    printf("<SPIKE_DMG> faulty instruction: %d\n", faulty_instruction);
   }
 
   if(RAW_register != -1)
   {
-    printf("<SPIKE> RAW register issue: %d\n", RAW_register);
+    printf("<SPIKE_DMG> RAW register issue: %d\n", RAW_register);
   }
+
+  if(ndb_chance != 0)
+  {
+    srand((unsigned int)time(NULL));
+
+    printf("<SPIKE_DMG> Non deterministic chance: %d\%;\n", (int)(ndb_chance * 100));
+    printf("<SPIKE_DMG> Non deterministic fault: %d;\n", ndb_fault);
+  } 
 
   std::vector<std::pair<reg_t, abstract_mem_t*>> mems =
       make_mems(cfg.mem_layout);
