@@ -162,6 +162,9 @@ extern uint32_t faulty_instruction;
 extern int32_t RAW_register;
 extern int32_t ndb_fault;
 extern float ndb_chance;
+extern int32_t cold_start_n;
+extern int32_t cold_start_m;
+
 
 
 // These two functions are expected to be inlined by the compiler separately in
@@ -315,7 +318,7 @@ void processor_t::step(size_t n)
           if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) 
             throw trap_illegal_instruction(insn.bits());
 
-           if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
+          if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
             uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
             insn_t new_insn(modified_bits);
 
@@ -326,6 +329,21 @@ void processor_t::step(size_t n)
 
             auto ic_entry = _mmu->access_icache(pc);
             ic_entry->data = fetch;
+          }
+          
+          if (cold_start_n > 0 && (insn.bits() & fault_insn_mask) == (cold_start_m & fault_insn_mask)) {
+            cold_start_n--;
+            uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+            insn_t new_insn(modified_bits);
+
+            fetch = insn_fetch_t{
+              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+              new_insn
+            };
+
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
+            fprintf(stderr, "ALO\n");
           }
 
           int is_vector_op = insn.opcode() == 0x57 || insn.opcode() == 0x07 || insn.opcode() == 0x27;
@@ -384,7 +402,20 @@ void processor_t::step(size_t n)
             ic_entry->data = fetch;
           }
 
-          
+          if (cold_start_n > 0 && (insn.bits() & fault_insn_mask) == (cold_start_m & fault_insn_mask)) {
+            cold_start_n--;
+            uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+            insn_t new_insn(modified_bits);
+
+            fetch = insn_fetch_t{
+              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+              new_insn
+            };
+
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
+            fprintf(stderr, "ALO\n");
+          }
 
           int is_vector_op = is_vector_operation(insn.bits());
 
