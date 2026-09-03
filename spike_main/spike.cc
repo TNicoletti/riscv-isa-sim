@@ -321,14 +321,30 @@ static std::vector<size_t> parse_hartids(const char *s)
 }
 
 int  ill_instruction = 0;
+
 int  faulty_instruction = 0;
+
 int  RAW_register = -1;
+
 int  ndb_fault = 0;
 float  ndb_chance = 0;
+
 int cold_start_n = 0;
 int cold_start_m = 0;
+
 int good_start_n = -1;
 int good_start_m = -1;
+
+int tie1 = 0; // three_instruction_err 1
+int tie2 = 0; // three_instruction_err 2
+int tie3 = 0; // three_instruction_err 3
+
+int fie1 = 0; // four_instruction_err 1
+int fie2 = 0; // four_instruction_err 2
+int fie3 = 0; // four_instruction_err 3
+int fie4 = 0; // four_instruction_err 4
+
+
 int main(int argc, char** argv)
 {
   bool dump_memory = false;
@@ -430,6 +446,44 @@ int main(int argc, char** argv)
 
     good_start_n = std::stoi(arg.substr(0, comma));
     good_start_m = strtoull((s + comma + 1), 0, 16);
+  });
+
+  parser.option(0, "three-instruction-err", 1, [&](const char* s) {
+    std::string arg(s);
+
+    size_t comma1 = arg.find(',');
+    size_t comma2 = arg.find(',', comma1 + 1);
+
+    if (comma1 == std::string::npos || comma2 == std::string::npos) {
+        fprintf(stderr, "Usage: --three-instruction-err=HEX,HEX,HEX\n");
+        exit(1);
+    }
+    uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+    tie1 = strtoull(arg.substr(0, comma1).c_str(), nullptr, 16) & fault_insn_mask;
+    tie2 = strtoull(arg.substr(comma1 + 1, comma2 - comma1 - 1).c_str(), nullptr, 16) & fault_insn_mask;
+    tie3 = strtoull(arg.substr(comma2 + 1).c_str(), nullptr, 16) & fault_insn_mask;
+
+    // Use os três valores aqui
+  });
+
+  parser.option(0, "four-instruction-err", 1, [&](const char* s) {
+    std::string arg(s);
+
+    size_t comma1 = arg.find(',');
+    size_t comma2 = arg.find(',', comma1 + 1);
+    size_t comma3 = arg.find(',', comma2 + 1);
+
+    if (comma1 == std::string::npos || comma2 == std::string::npos) {
+        fprintf(stderr, "Usage: --three-instruction-err=HEX,HEX,HEX\n");
+        exit(1);
+    }
+    uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+    fie1 = strtoull(arg.substr(0, comma1).c_str(), nullptr, 16) & fault_insn_mask;
+    fie2 = strtoull(arg.substr(comma1 + 1, comma2 - comma1 - 1).c_str(), nullptr, 16) & fault_insn_mask;
+    fie3 = strtoull(arg.substr(comma2 + 1).c_str(), nullptr, 16) & fault_insn_mask;
+    fie4 = strtoull(arg.substr(comma3 + 1).c_str(), nullptr, 16) & fault_insn_mask;
+
+    // Use os três valores aqui
   });
 
   parser.option('d', 0, 0, [&](const char UNUSED *s){debug = true;});
@@ -562,6 +616,14 @@ int main(int argc, char** argv)
     printf("<SPIKE_DMG> RAW register issue: %d\n", RAW_register);
   }
 
+  if(ndb_chance != 0)
+  {
+    srand((unsigned int)time(NULL));
+
+    printf("<SPIKE_DMG> Non deterministic chance: %d\%;\n", (int)(ndb_chance * 100));
+    printf("<SPIKE_DMG> Non deterministic fault: %d;\n", ndb_fault);
+  } 
+
   if (cold_start_n > 0) {
     printf("<SPIKE_DMG>: instruction %d will fail %d times\n",
            cold_start_m, cold_start_n);
@@ -572,13 +634,13 @@ int main(int argc, char** argv)
            good_start_m, good_start_n);
   }
 
-  if(ndb_chance != 0)
-  {
-    srand((unsigned int)time(NULL));
+  if(tie1 != 0 && tie2 != 0 && tie3 != 0){
+    printf("<SPIKE_DMG>: three instruction error: %d %d %d\n", tie1, tie2, tie3);
+  }
 
-    printf("<SPIKE_DMG> Non deterministic chance: %d\%;\n", (int)(ndb_chance * 100));
-    printf("<SPIKE_DMG> Non deterministic fault: %d;\n", ndb_fault);
-  } 
+  if(fie1 != 0 && fie2 != 0 && fie3 != 0 && fie4 != 0){
+    printf("<SPIKE_DMG>: four instruction error: %d %d %d %d\n", fie1, fie2, fie3, fie4);
+  }
 
   std::vector<std::pair<reg_t, abstract_mem_t*>> mems =
       make_mems(cfg.mem_layout);

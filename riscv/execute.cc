@@ -167,6 +167,15 @@ extern int32_t cold_start_m;
 extern int32_t good_start_n;
 extern int32_t good_start_m;
 
+extern int32_t tie1; // three_instruction_err 1
+extern int32_t tie2; // three_instruction_err 2
+extern int32_t tie3; // three_instruction_err 3
+
+extern int32_t fie1; // four_instruction_err 1
+extern int32_t fie2; // four_instruction_err 2
+extern int32_t fie3; // four_instruction_err 3
+extern int32_t fie4; // four_instruction_err 4
+
 // These two functions are expected to be inlined by the compiler separately in
 // the processor_t::step() loop. The logged variant is used in the slow path
 static inline reg_t execute_insn_fast(processor_t* p, reg_t pc, insn_fetch_t fetch) {
@@ -235,6 +244,8 @@ int is_vector_operation(int32_t raw){
   return is_vector_op;
 }
 
+int tie_progression = 0;
+int fie_progression = 0;
 // fetch/decode/execute loop
 void processor_t::step(size_t n)
 {
@@ -314,11 +325,12 @@ void processor_t::step(size_t n)
           insn_fetch_t fetch = mmu->load_insn(pc);
           insn_t insn = fetch.insn;
           uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+          int masked_instruction = insn.bits() & fault_insn_mask;
 
-          if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) 
+          if (ill_instruction != 0 && masked_instruction == (ill_instruction & fault_insn_mask)) 
             throw trap_illegal_instruction(insn.bits());
 
-          if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
+          if (faulty_instruction != 0 && masked_instruction == (faulty_instruction & fault_insn_mask)) {
             uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
             insn_t new_insn(modified_bits);
 
@@ -346,7 +358,6 @@ void processor_t::step(size_t n)
           }
 
           if ((insn.bits() & fault_insn_mask) == (good_start_m & fault_insn_mask)) {
-            fprintf(stderr, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
             if(good_start_n == 0){
               uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
               insn_t new_insn(modified_bits);
@@ -396,32 +407,48 @@ void processor_t::step(size_t n)
       }
       else while (instret < n)
       {
-          insn_fetch_t fetch = mmu->load_insn(pc);
-          insn_t insn = fetch.insn;
-          uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+        insn_fetch_t fetch = mmu->load_insn(pc);
+        insn_t insn = fetch.insn;
+        uint32_t fault_insn_mask = 0b11111100000000000111000001111111;
+        int masked_instruction = insn.bits() & fault_insn_mask;
 
-          if (ill_instruction != 0 && (insn.bits() & fault_insn_mask) == (ill_instruction & fault_insn_mask)) {
-            throw trap_illegal_instruction(insn.bits());
-          }
-          
-          if (faulty_instruction != 0 && (insn.bits() & fault_insn_mask) == (faulty_instruction & fault_insn_mask)) {
-            // 1. Construct modified instruction
-            uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
-            insn_t new_insn(modified_bits);
+        if (ill_instruction != 0 && masked_instruction == (ill_instruction & fault_insn_mask)) {
+          throw trap_illegal_instruction(insn.bits());
+        }
+        
+        if (faulty_instruction != 0 && masked_instruction == (faulty_instruction & fault_insn_mask)) {
+          // 1. Construct modified instruction
+          uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+          insn_t new_insn(modified_bits);
 
-            // 2. Build the modified fetch struct
-            fetch = insn_fetch_t{
-              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
-              new_insn
-            };
+          // 2. Build the modified fetch struct
+          fetch = insn_fetch_t{
+            decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+            new_insn
+          };
 
-            // 3. OVERWRITE the I-Cache entry for this PC so the loop uses your modified fetch!
-            auto ic_entry = _mmu->access_icache(pc);
-            ic_entry->data = fetch;
-          }
+          // 3. OVERWRITE the I-Cache entry for this PC so the loop uses your modified fetch!
+          auto ic_entry = _mmu->access_icache(pc);
+          ic_entry->data = fetch;
+        }
 
-          if (cold_start_n > 0 && (insn.bits() & fault_insn_mask) == (cold_start_m & fault_insn_mask)) {
-            cold_start_n--;
+        if (cold_start_n > 0 && masked_instruction == (cold_start_m & fault_insn_mask)) {
+          cold_start_n--;
+          uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+          insn_t new_insn(modified_bits);
+
+          fetch = insn_fetch_t{
+            decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+            new_insn
+          };
+
+          auto ic_entry = _mmu->access_icache(pc);
+          ic_entry->data = fetch;
+          fprintf(stderr, "ALO\n");
+        }
+
+        if (masked_instruction == (good_start_m & fault_insn_mask)) {
+          if(good_start_n == 0){
             uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
             insn_t new_insn(modified_bits);
 
@@ -433,81 +460,112 @@ void processor_t::step(size_t n)
             auto ic_entry = _mmu->access_icache(pc);
             ic_entry->data = fetch;
             fprintf(stderr, "ALO\n");
+          } else
+            good_start_n--;
+        }
+
+        int is_vector_op = is_vector_operation(insn.bits());
+
+        if(just_wrote_RAW_register == 1 && is_vector_op &&
+          (insn.rs1() == RAW_register || insn.rs2() == RAW_register)
+        ){
+          throw trap_illegal_instruction(insn.bits());
+        }
+
+        if (RAW_register != -1 && insn.rd() == RAW_register && is_vector_op) {
+          just_wrote_RAW_register = 1;
+        }else{
+          just_wrote_RAW_register = 0;
+        }
+
+        if(is_vector_op && ndb_chance >= (float)rand() / (float)RAND_MAX){
+          if (ndb_fault == 0){
+            uint32_t vd = insn.bits() & 0x1f;
+
+            uint32_t modified_bits =
+                0x5C000057 | (vd << 7);
+
+            insn_t new_insn(modified_bits);
+
+            fetch = insn_fetch_t{
+              decode_insn(new_insn),
+              new_insn
+            };
+
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
+          } else if(ndb_fault == 1){
+            // Flip set bit in instruction
+            uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
+            insn_t new_insn(modified_bits);
+
+            fetch = insn_fetch_t{
+              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+              new_insn
+            };
+
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
+          } else if(ndb_fault == 2){
+            // Do nothing(NOP)
+            uint32_t modified_bits = 0x00000013; // Example mutation
+            insn_t new_insn(modified_bits);
+
+            fetch = insn_fetch_t{
+              decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+              new_insn
+            };
+
+            auto ic_entry = _mmu->access_icache(pc);
+            ic_entry->data = fetch;
           }
+        }
+        int prev_fie_prog = fie_progression;
+        int prev_tie_prog = tie_progression;
+        if(masked_instruction == tie3 && tie_progression == 2){
+          tie_progression = 0;
+          // Do nothing(NOP)
+          uint32_t modified_bits = 0x00000013; // Example mutation
+          insn_t new_insn(modified_bits);
 
-          if ((insn.bits() & fault_insn_mask) == (good_start_m & fault_insn_mask)) {
-            if(good_start_n == 0){
-              uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
-              insn_t new_insn(modified_bits);
-  
-              fetch = insn_fetch_t{
-                decode_insn(new_insn), // Maps bit pattern to C++ execution callback
-                new_insn
-              };
-  
-              auto ic_entry = _mmu->access_icache(pc);
-              ic_entry->data = fetch;
-              fprintf(stderr, "ALO\n");
-            } else
-              good_start_n--;
-          }
+          fetch = insn_fetch_t{
+            decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+            new_insn
+          };
 
-          int is_vector_op = is_vector_operation(insn.bits());
+          auto ic_entry = _mmu->access_icache(pc);
+          ic_entry->data = fetch;
+        }
+        if(masked_instruction == tie2 && tie_progression == 1)
+          tie_progression ++;
+        if(masked_instruction == tie1 && tie_progression == 0)
+          tie_progression ++;
+        if(tie_progression == prev_tie_prog)
+          tie_progression = 0;
 
-          if(just_wrote_RAW_register == 1 && is_vector_op &&
-            (insn.rs1() == RAW_register || insn.rs2() == RAW_register)
-          ){
-            throw trap_illegal_instruction(insn.bits());
-          }
 
-          if (RAW_register != -1 && insn.rd() == RAW_register && is_vector_op) {
-            just_wrote_RAW_register = 1;
-          }else{
-            just_wrote_RAW_register = 0;
-          }
+        if(masked_instruction == fie4 && fie_progression == 3){
+          fie_progression = 0;
+          // Do nothing(NOP)
+          uint32_t modified_bits = 0x00000013; // Example mutation
+          insn_t new_insn(modified_bits);
 
-          if(is_vector_op && ndb_chance >= (float)rand() / (float)RAND_MAX){
-            if (ndb_fault == 0){
-              uint32_t vd = insn.bits() & 0x1f;
+          fetch = insn_fetch_t{
+            decode_insn(new_insn), // Maps bit pattern to C++ execution callback
+            new_insn
+          };
 
-              uint32_t modified_bits =
-                  0x5C000057 | (vd << 7);
-
-              insn_t new_insn(modified_bits);
-
-              fetch = insn_fetch_t{
-                decode_insn(new_insn),
-                new_insn
-              };
-
-              auto ic_entry = _mmu->access_icache(pc);
-              ic_entry->data = fetch;
-            } else if(ndb_fault == 1){
-              // Flip set bit in instruction
-              uint32_t modified_bits = insn.bits() ^ 0x00100000; // Example mutation
-              insn_t new_insn(modified_bits);
-  
-              fetch = insn_fetch_t{
-                decode_insn(new_insn), // Maps bit pattern to C++ execution callback
-                new_insn
-              };
-  
-              auto ic_entry = _mmu->access_icache(pc);
-              ic_entry->data = fetch;
-            } else if(ndb_fault == 2){
-              // Do nothing(NOP)
-              uint32_t modified_bits = 0x00000013; // Example mutation
-              insn_t new_insn(modified_bits);
-  
-              fetch = insn_fetch_t{
-                decode_insn(new_insn), // Maps bit pattern to C++ execution callback
-                new_insn
-              };
-  
-              auto ic_entry = _mmu->access_icache(pc);
-              ic_entry->data = fetch;
-            }
-          }
+          auto ic_entry = _mmu->access_icache(pc);
+          ic_entry->data = fetch;
+        }
+        if(masked_instruction == fie3 && fie_progression == 2)
+          fie_progression ++;
+        if(masked_instruction == fie2 && fie_progression == 1)
+          fie_progression ++;
+        if(masked_instruction == fie1 && fie_progression == 0)
+          fie_progression ++;
+        if(fie_progression == prev_fie_prog)
+          fie_progression = 0;
 
         // Main simulation loop, fast path.
         for (auto ic_entry = _mmu->access_icache(pc); instret < n; instret++) {
