@@ -327,6 +327,8 @@ int  ndb_fault = 0;
 float  ndb_chance = 0;
 int cold_start_n = 0;
 int cold_start_m = 0;
+int good_start_n = -1;
+int good_start_m = -1;
 int main(int argc, char** argv)
 {
   bool dump_memory = false;
@@ -405,18 +407,30 @@ int main(int argc, char** argv)
   });
 
 
-parser.option(0, "cold-start", 1, [&](const char* s) {
+  parser.option(0, "cold-start", 1, [&](const char* s) {
+      std::string arg(s);
+      size_t comma = arg.find(',');
+
+      if (comma == std::string::npos) {
+          fprintf(stderr, "Usage: --cold-start=N,M\n");
+          exit(1);
+      }
+
+      cold_start_n = std::stoi(arg.substr(0, comma));
+      cold_start_m = strtoull((s + comma + 1), 0, 16);
+  });
+  parser.option(0, "good-start", 1, [&](const char* s) {
     std::string arg(s);
     size_t comma = arg.find(',');
 
     if (comma == std::string::npos) {
-        fprintf(stderr, "Usage: --cold-start=N,M\n");
+        fprintf(stderr, "Usage: --good-start=N,M\n");
         exit(1);
     }
 
-    cold_start_n = std::stoi(arg.substr(0, comma));
-    cold_start_m = strtoull((s + comma + 1), 0, 16);
-});
+    good_start_n = std::stoi(arg.substr(0, comma));
+    good_start_m = strtoull((s + comma + 1), 0, 16);
+  });
 
   parser.option('d', 0, 0, [&](const char UNUSED *s){debug = true;});
   parser.option('g', 0, 0, [&](const char UNUSED *s){histogram = true;});
@@ -551,7 +565,12 @@ parser.option(0, "cold-start", 1, [&](const char* s) {
   if (cold_start_n > 0) {
     printf("<SPIKE_DMG>: instruction %d will fail %d times\n",
            cold_start_m, cold_start_n);
-}
+  }
+
+  if (good_start_n > 0) {
+    printf("<SPIKE_DMG>: instruction %d will be right %d times, then, it will produce wrong results\n",
+           good_start_m, good_start_n);
+  }
 
   if(ndb_chance != 0)
   {
